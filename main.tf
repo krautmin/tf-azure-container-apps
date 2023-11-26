@@ -3,19 +3,19 @@ resource "azurerm_resource_group" "this" {
   name     = var.rg_name
 }
 
-resource "azurerm_route_table" "rt1" {
-  location            = var.vnet_location
-  name                = module.naming.route_table.name
-  resource_group_name = azurerm_resource_group.example.name
+resource "azurerm_user_assigned_identity" "this" {
+  location            = azurerm_resource_group.this.location
+  name                = "storage${random_pet.this.id}"
+  resource_group_name = azurerm_resource_group.this.name
 }
 
-module "network_security_group" {
+module "security_group" {
   depends_on              = [module.subnet]
   source                  = "./modules/azure-security"
   name                    = local.name
   environment             = local.environment
-  resource_group_name     = module.resource_group.resource_group_name
-  resource_group_location = module.resource_group.resource_group_location
+  resource_group_name     = azurerm_resource_group.this.name
+  resource_group_location = azurerm_resource_group.this.location
   subnet_ids              = module.subnet.default_subnet_id
   inbound_rules = [
     {
@@ -62,8 +62,8 @@ module "network" {
 
   // Enabling specific service endpoints on subnet1 and subnet2.
   subnet_service_endpoints = {
-    subnet1 = ["Microsoft.Storage"]
-    subnet2 = ["Microsoft.Sql", "Microsoft.AzureActiveDirectory"]
+    container = ["Microsoft.Storage"]
+    database = ["Microsoft.Sql", "Microsoft.Storage", "Microsoft.AzureActiveDirectory"]
     openai = ["Microsoft.CognitiveServices"]
   }
 
@@ -87,11 +87,6 @@ module "network" {
         }
       }
     ]
-  }
-
-  // Associating Route Table to subnet1.
-  route_tables_ids = {
-    subnet1 = azurerm_route_table.rt1.id
   }
 
   // Applying tags to the virtual network.
@@ -152,6 +147,55 @@ module "postgresql" {
   providers = {
     azurerm                   = azurerm
     azurerm.dns_zone_provider = azurerm.dns_zone_provider
+  }
+}
+
+module "storage" {
+  source = "./modules/azure-storage"
+
+  storage_account_account_replication_type = "LRS"
+  storage_account_account_tier             = "Standard"
+  storage_account_account_kind             = "StorageV2"
+  storage_account_location                 = azurerm_resource_group.this.location
+  storage_account_name                     = "tfmodstoracc${random_pet.this.id}"
+  storage_account_resource_group_name      = azurerm_resource_group.this.name
+  storage_account_min_tls_version          = "TLS1_2"
+  storage_account_network_rules = {
+    bypass         = ["AzureServices"]
+    default_action = "Deny"
+    ip_rules       = [local.public_ip]
+  }
+  storage_account_identity = {
+    identity_ids = {
+      msi = azurerm_user_assigned_identity.this.id
+    }
+    type = "UserAssigned"
+  }
+  storage_account_customer_managed_key = {
+    key_name     = azurerm_key_vault_key.storage_key.name
+    key_vault_id = azurerm_key_vault.storage_vault.id
+  }
+  key_vault_access_policy = {
+    msi = {
+      identity_principle_id = azurerm_user_assigned_identity.this.principal_id
+      identity_tenant_id    = azurerm_user_assigned_identity.this.tenant_id
+    }
+  }
+  storage_container = {
+    blob_container = {
+      name                  = "blob-container-${random_pet.this.id}"
+      container_access_type = "private"
+    }
+  }
+  storage_queue = {
+    queue0 = {
+      name = "queue-${random_pet.this.id}"
+    }
+  }
+  storage_table = {
+    table0 = {
+      name = "table${random_pet.this.id}"
+    }
   }
 }
 
